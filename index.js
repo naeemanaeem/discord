@@ -1,173 +1,153 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, PermissionsBitField } = require('discord.js');
 const axios = require('axios');
 const readline = require('readline');
 require('dotenv').config();
 
-// Create the bot client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-  ],
+  ]
 });
 
-// On bot ready
-client.on('ready', () => {
+const recentMessages = new Map(); // GuildID -> Array
+
+client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-// On message received
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-
-  const content = message.content.trim();
-  console.log(`📨 Incoming message: ${content}`);
-
-  // Ping check
-  if (content === '!ping') {
-    return message.reply('🏓 Pong!');
+client.on('messageCreate', (message) => {
+  if (!message.guild || message.author.bot) return;
+  if (!recentMessages.has(message.guild.id)) {
+    recentMessages.set(message.guild.id, []);
   }
+  const cache = recentMessages.get(message.guild.id);
+  cache.push(message);
+  if (cache.length > 100) cache.shift();
+});
 
-  // !ask → Query local LLM
-  if (content.startsWith('!ask')) {
-    const prompt = content.slice(4).trim();
-    if (!prompt) return message.reply("Please provide a prompt after `!ask`.");
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName, options } = interaction;
+
+  if (commandName === 'ask') {
+    const prompt = options.getString('prompt');
+    await interaction.reply('💭 Thinking...');
 
     try {
-      const responseMessage = await message.reply("💭 Thinking...");
-
-      const res = await axios.post(
-        'http://localhost:11434/api/generate',
-        { model: 'llama3', prompt, stream: true },
-        { responseType: 'stream' }
-      );
+      const res = await axios.post('http://localhost:11434/api/generate', {
+        model: 'llama3',
+        prompt,
+        stream: true,
+      }, { responseType: 'stream' });
 
       let fullResponse = '';
-      let updateCounter = 0;
-
-      const rl = readline.createInterface({
-        input: res.data,
-        crlfDelay: Infinity,
-      });
+      let editTimer;
+      const rl = readline.createInterface({ input: res.data });
 
       rl.on('line', async (line) => {
         if (!line.trim()) return;
         try {
           const json = JSON.parse(line);
           if (json.done) return;
+
           fullResponse += json.response;
 
-          if (++updateCounter % 20 === 0 || fullResponse.length < 40) {
-            const chunk = fullResponse.slice(-1900);
-            responseMessage.edit(`💡 ${chunk}`);
-          }
+          // Debounced edit
+          if (editTimer) clearTimeout(editTimer);
+          editTimer = setTimeout(() => {
+            interaction.editReply(`💡 ${fullResponse.slice(-1900)}`);
+          }, 600); // Debounce delay
         } catch (e) {
-          console.error("JSON parse error:", e.message);
+          console.error('Parsing error:', e.message);
         }
       });
 
-      rl.on('close', async () => {
-        const finalChunk = fullResponse.slice(-1900);
-        await responseMessage.edit(`💡 ${finalChunk}`);
+      rl.on('close', () => {
+        interaction.editReply(`💡 ${fullResponse.slice(-1900)}`);
       });
 
     } catch (err) {
-      console.error("❌ Streaming error:", err.message);
-      message.reply("Something went wrong while streaming from the LLM.");
+      console.error('Streaming error:', err.message);
+      interaction.editReply('❌ Error during streaming.');
     }
   }
 
-  // !summarize → Summarize last 50 messages
-  if (content === '!summarize') {
-    const messages = await message.channel.messages.fetch({ limit: 50 });
-    const convo = [...messages.values()]
-      .reverse()
-      .filter(m => !m.author.bot)
+  if (commandName === 'summarize') {
+    const channel = interaction.channel;
+    const messages = await channel.messages.fetch({ limit: 100 });
+  
+    const content = messages
+      .filter(m => !m.author.bot && m.content.trim())
       .map(m => `${m.author.username}: ${m.content}`)
-      .join('\n');
-
-    const prompt = `Summarize this chat:\n${convo}`;
-    const response = await axios.post('http://localhost:11434/api/generate', {
-      model: 'llama3',
-      prompt,
-      stream: false
-    });
-
-    message.reply(`📝 ${response.data.response}`);
-  }
-
-  // !stats → User message count
-  if (content === '!stats') {
-    const messages = await message.channel.messages.fetch({ limit: 100 });
-    const counts = {};
-    messages.forEach(m => {
-      if (!m.author.bot) {
-        counts[m.author.username] = (counts[m.author.username] || 0) + 1;
-      }
-    });
-
-    const stats = Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .map(([user, count]) => `• ${user}: ${count}`)
-      .join('\n');
-
-    message.reply(`📊 Top Users:\n${stats}`);
-  }
-
-  // !modcheck → Basic moderation via LLM
-  if (content === '!modcheck') {
-    const messages = await message.channel.messages.fetch({ limit: 50 });
-    const chatLog = [...messages.values()]
       .reverse()
-      .map(m => `${m.author.username}: ${m.content}`)
-      .join('\n');
-
-    const prompt = `Check this chat for toxic or inappropriate messages:\n${chatLog}`;
-    const response = await axios.post('http://localhost:11434/api/generate', {
-      model: 'llama3',
-      prompt,
-      stream: false
-    });
-
-    message.reply(`🚨 Moderation result:\n${response.data.response}`);
+      .join('\n')
+      .slice(-4000);
+  
+    await interaction.deferReply();
+  
+    if (!content.trim()) {
+      return await interaction.editReply("⚠️ Not enough user messages to summarize.");
+    }
+  
+    try {
+      const res = await axios.post('http://localhost:11434/api/generate', {
+        model: 'llama3',
+        prompt: `Please summarize the following Discord conversation:\n\n${content}`,
+        stream: false,
+      });
+  
+      const summary = res.data.response || '⚠️ No summary generated.';
+      await interaction.editReply(`📝 ${summary}`);
+    } catch (err) {
+      console.error('❌ Summarize command failed:', err.message);
+      await interaction.editReply('❌ Could not summarize the messages.');
+    }
   }
 
-  // !pinlast → Pin last non-bot message
-  if (content === '!pinlast') {
-    const messages = await message.channel.messages.fetch({ limit: 50 });
-    const target = messages.find(m => !m.author.bot && !m.pinned);
-    if (target) {
-      await target.pin();
-      message.reply(`📌 Pinned: "${target.content}"`);
+  else if (commandName === 'stats') {
+    const total = client.guilds.cache.reduce((acc, g) => acc + g.memberCount, 0);
+    interaction.reply(`📊 I'm active in ${client.guilds.cache.size} servers with ${total} users!`);
+  }
+
+  else if (commandName === 'modcheck') {
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    const isMod = member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+    interaction.reply(isMod ? '🛡️ You are a moderator!' : '🚫 You are not a moderator.');
+  }
+
+  else if (commandName === 'pinlast') {
+    const channel = interaction.channel;
+    const msgs = await channel.messages.fetch({ limit: 10 });
+    const lastUserMsg = msgs.find(m => !m.author.bot);
+    if (lastUserMsg) {
+      await lastUserMsg.pin();
+      interaction.reply(`📌 Pinned: "${lastUserMsg.content}"`);
     } else {
-      message.reply("❌ No suitable message found to pin.");
+      interaction.reply('❌ No user messages found to pin.');
     }
   }
 
-  // !summarize voice → Placeholder
-  if (content === '!summarize voice') {
-    message.reply("🎤 Voice summarization requires audio transcription setup (e.g. Whisper).");
-  }
+  else if (commandName === 'agenda') {
+    const messages = recentMessages.get(interaction.guildId) || [];
+    const content = messages.map(m => `${m.author.username}: ${m.content}`).join('\n');
+    const prompt = `From this conversation, extract an agenda with bullet points:\n${content}`;
 
-  // !agenda → Generate agenda from chat
-  if (content === '!agenda') {
-    const messages = await message.channel.messages.fetch({ limit: 50 });
-    const text = [...messages.values()]
-      .reverse()
-      .map(m => `${m.author.username}: ${m.content}`)
-      .join('\n');
-
-    const prompt = `Based on the following messages, generate a professional meeting agenda or weekly task list:\n${text}`;
-    const response = await axios.post('http://localhost:11434/api/generate', {
-      model: 'llama3',
-      prompt,
-      stream: false
-    });
-
-    message.reply(`🗓️ Agenda:\n${response.data.response}`);
+    await interaction.reply('📅 Generating agenda...');
+    try {
+      const res = await axios.post('http://localhost:11434/api/generate', {
+        model: 'llama3',
+        prompt,
+        stream: false,
+      });
+      interaction.editReply(`🗒️ Agenda:\n${res.data.response}`);
+    } catch (err) {
+      console.error('Agenda error:', err.message);
+      interaction.editReply('❌ Failed to generate agenda.');
+    }
   }
 });
 
-// Start the bot
 client.login(process.env.DISCORD_TOKEN);
