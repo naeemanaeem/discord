@@ -1,0 +1,16 @@
+{
+  "name": "discord-local-llm-bot",
+  "version": "1.0.0",
+  "description": "A Discord bot connected to a local LLM using Ollama",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@discordjs/rest": "^2.5.0",
+    "axios": "^1.6.0",
+    "discord-api-types": "^0.38.1",
+    "discord.js": "^14.11.0",
+    "dotenv": "^16.3.1"
+  }
+}
