@@ -51,7 +51,21 @@ const commands = [
         .setDescription('Pin the last user message'),
     new SlashCommandBuilder()
         .setName('agenda')
-        .setDescription('Generate a meeting agenda from conversation'),
+        .setDescription('Generate a meeting agenda from conversation')
+        .addSubcommand(sub =>
+            sub.setName('generate')
+                .setDescription('Generate agenda from recent messages')
+        )
+        .addSubcommand(sub =>
+            sub.setName('add')
+                .setDescription('Manually add a calendar event')
+                .addStringOption(opt => opt.setName('title').setDescription('Event title').setRequired(true))
+                .addStringOption(opt => opt.setName('date').setDescription('Date (e.g. 2025-05-15)').setRequired(true))
+                .addStringOption(opt => opt.setName('time').setDescription('Time (e.g. 14:30)').setRequired(true))
+        )
+        .addSubcommand(sub =>
+            sub.setName('list')
+                .setDescription('List upcoming events')),
     new SlashCommandBuilder()
         .setName('summarize-voice')
         .setDescription('Summarize the conversation from a voice channel')

@@ -20,7 +20,7 @@ const recentMessages = new Map();  // This will store messages per guild
 
 const POLL_FILE = path.join(__dirname, 'polls.json');
 let activePolls = new Map();
-
+const AGENDA_FILE = './data/agenda.json';
 
 // Ensure poll storage file exists
 if (!fs.existsSync(POLL_FILE)) fs.writeFileSync(POLL_FILE, '{}');
@@ -279,40 +279,78 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   else if (commandName === 'agenda') {
+    const subcommand = interaction.options.getSubcommand();
     const guildId = interaction.guildId;
-    console.log(`🔍 Processing agenda for guild: ${guildId}`);
 
-    // Retrieve recent messages for the guild
-    const messages = recentMessages.get(guildId) || [];
-    console.log(`📜 Messages for agenda in guild ${guildId}: ${JSON.stringify(messages)}`);
+    if (subcommand === 'generate') {
+      console.log(`🔍 Processing agenda for guild: ${guildId}`);
 
-    // If there are too few messages, return a message to the user
-    if (messages.length < 3) {
-      return interaction.reply("There isn't enough conversation to extract an agenda from. Try chatting a bit more first!");
+      const messages = recentMessages.get(guildId) || [];
+      if (messages.length < 3) {
+        return interaction.reply("There isn't enough conversation to extract an agenda from. Try chatting a bit more first!");
+      }
+
+      const content = messages.map(m => `${m.author}: ${m.content}`).join('\n');
+      const prompt = `From this conversation, extract an agenda with bullet points:\n${content}`;
+      console.log(`📜 Generated prompt for agenda: ${prompt}`);
+
+      await interaction.reply('📅 Generating agenda...');
+
+      try {
+        const res = await axios.post('http://localhost:11434/api/generate', {
+          model: 'llama3',
+          prompt,
+          stream: false,
+        });
+
+        console.log(`📝 LLM Response: ${JSON.stringify(res.data)}`);
+        interaction.editReply(`🗒️ Agenda:\n${res.data.response}`);
+      } catch (err) {
+        console.error('Agenda error:', err.message);
+        interaction.editReply('❌ Failed to generate agenda.');
+      }
     }
 
-    // Generate the content for agenda
-    const content = messages.map(m => `${m.author}: ${m.content}`).join('\n');
-    const prompt = `From this conversation, extract an agenda with bullet points:\n${content}`;
+    else if (subcommand === 'add') {
+      const title = interaction.options.getString('title');
+      const date = interaction.options.getString('date');
+      const time = interaction.options.getString('time');
+      const datetime = `${date} ${time}`;
 
-    // Log the generated prompt
-    console.log(`📜 Generated prompt for agenda: ${prompt}`);
+      const event = {
+        title,
+        datetime,
+        addedBy: interaction.user.username,
+        timestamp: new Date(datetime).getTime()
+      };
 
-    await interaction.reply('📅 Generating agenda...');
+      const events = fs.existsSync(AGENDA_FILE)
+        ? JSON.parse(fs.readFileSync(AGENDA_FILE))
+        : [];
 
-    try {
-      const res = await axios.post('http://localhost:11434/api/generate', {
-        model: 'llama3',
-        prompt,
-        stream: false,
-      });
+      events.push(event);
+      events.sort((a, b) => a.timestamp - b.timestamp);
+      fs.writeFileSync(AGENDA_FILE, JSON.stringify(events, null, 2));
 
-      console.log(`📝 LLM Response: ${JSON.stringify(res.data)}`);
+      return interaction.reply(`📌 Event **${title}** scheduled for **${datetime}**`);
+    }
 
-      interaction.editReply(`🗒️ Agenda:\n${res.data.response}`);
-    } catch (err) {
-      console.error('Agenda error:', err.message);
-      interaction.editReply('❌ Failed to generate agenda.');
+    else if (subcommand === 'list') {
+      const events = fs.existsSync(AGENDA_FILE)
+        ? JSON.parse(fs.readFileSync(AGENDA_FILE))
+        : [];
+
+      if (events.length === 0) {
+        return interaction.reply('📭 No events scheduled yet.');
+      }
+
+      const upcoming = events
+        .filter(e => e.timestamp > Date.now())
+        .slice(0, 5)
+        .map(e => `• **${e.title}** on ${e.datetime} (by ${e.addedBy})`)
+        .join('\n');
+
+      return interaction.reply(`📅 **Upcoming Events:**\n${upcoming}`);
     }
   }
 
@@ -463,33 +501,33 @@ client.on('interactionCreate', async (interaction) => {
     const count = interaction.options.getInteger('count') || 5;
     const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
 
-    // Check if bot has access
     if (!targetChannel.viewable) {
       return interaction.reply('❌ I do not have access to that channel.');
     }
 
-    // Get timestamp for 7 days ago
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 
-    // Fetch last 100 messages from the channel
     const messages = await targetChannel.messages.fetch({ limit: 100 });
 
-    // Filter messages from last 7 days with 👍 reactions
+    const positiveEmojis = ['👍', '❤️', '🔥', '💯'];
+
     const topMessages = messages
-      .filter(m =>
-        m.createdTimestamp > sevenDaysAgo &&
-        m.reactions.cache.has('👍')
-      )
-      .map(m => ({
-        content: m.content || '[No text content]',
-        likes: m.reactions.cache.get('👍')?.count || 0,
-      }))
+      .map(m => {
+        const totalLikes = positiveEmojis.reduce((sum, emoji) => {
+          return sum + (m.reactions.cache.get(emoji)?.count || 0);
+        }, 0);
+        return {
+          content: m.content || '[No text content]',
+          likes: totalLikes,
+          timestamp: m.createdTimestamp,
+        };
+      })
+      .filter(m => m.timestamp > sevenDaysAgo && m.likes > 0)
       .sort((a, b) => b.likes - a.likes)
       .slice(0, count);
 
-
     if (topMessages.length === 0) {
-      return interaction.reply('❌ No messages with 👍 reactions found.');
+      return interaction.reply('❌ No messages with positive reactions found.');
     }
 
     const pollOptions = topMessages.map((m, i) => {
@@ -502,18 +540,16 @@ client.on('interactionCreate', async (interaction) => {
       };
     });
 
-    let pollText = `📊 **Poll Based on Top 👍 Messages (Last 7 Days)**\n\n`;
+    let pollText = `📊 **Poll Based on Top Messages (👍❤️🔥💯 - Last 7 Days)**\n\n`;
     pollOptions.forEach(opt => {
-      pollText += `${opt.emoji} (${opt.likes} 👍)\n${opt.label}\n\n`;
+      pollText += `${opt.emoji} (${opt.likes} total likes)\n${opt.label}\n\n`;
     });
 
-    // Send and react
     const pollMessage = await interaction.reply({ content: pollText, fetchReply: true });
     for (const opt of pollOptions) {
       await pollMessage.react(opt.emoji);
     }
 
-    // Store in polls.json
     const polls = JSON.parse(fs.readFileSync(POLL_FILE, 'utf8'));
     polls[pollMessage.id] = {
       channelId: pollMessage.channel.id,
@@ -522,6 +558,7 @@ client.on('interactionCreate', async (interaction) => {
     };
     fs.writeFileSync(POLL_FILE, JSON.stringify(polls, null, 2));
   }
+
 
 
   else if (commandName === 'help') {
@@ -540,7 +577,7 @@ client.on('interactionCreate', async (interaction) => {
   `;
     interaction.reply(helpText);
   }
-  
+
 });
 
 client.login(process.env.DISCORD_TOKEN);
