@@ -24,7 +24,7 @@ const commands = [
             opt.setName('option5').setDescription('Fifth option (optional)').setRequired(false)
         ),
     new SlashCommandBuilder()
-        .setName('pollresults')
+        .setName('poll-results')
         .setDescription('Get the results of a poll by message ID')
         .addStringOption(opt =>
             opt.setName('messageid')

@@ -1,8 +1,19 @@
-const { Client, GatewayIntentBits, Partials, PermissionsBitField } = require('discord.js');
-const axios = require('axios');
-const readline = require('readline');
-const path = require('path');
-require('dotenv').config();
+import { Client, GatewayIntentBits, Partials, PermissionsBitField } from 'discord.js';
+import axios from 'axios';
+import { createInterface } from 'readline';
+import { join } from 'path';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import fs from 'fs';
+
+import { existsSync, writeFileSync, readFileSync } from 'fs';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+
+import dotenv from 'dotenv';
+dotenv.config();
 
 // Initialize client
 const client = new Client({
@@ -15,19 +26,19 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
-const fs = require('fs');
+
 const recentMessages = new Map();  // This will store messages per guild
 
-const POLL_FILE = path.join(__dirname, 'polls.json');
+const POLL_FILE = join(__dirname, 'polls.json');
 let activePolls = new Map();
 const AGENDA_FILE = './data/agenda.json';
 
 // Ensure poll storage file exists
-if (!fs.existsSync(POLL_FILE)) fs.writeFileSync(POLL_FILE, '{}');
+if (!existsSync(POLL_FILE)) writeFileSync(POLL_FILE, '{}');
 
 function savePollsToFile() {
   const obj = Object.fromEntries(activePolls);
-  fs.writeFileSync(POLL_FILE, JSON.stringify(obj, null, 2));
+  writeFileSync(POLL_FILE, JSON.stringify(obj, null, 2));
 }
 
 async function transcribeVoiceChannel(channel) {
@@ -61,7 +72,7 @@ async function transcribeAudio(audioUrl) {
   }
 }
 function resumePendingPolls(client) {
-  const polls = JSON.parse(fs.readFileSync(POLL_FILE, 'utf8'));
+  const polls = JSON.parse(readFileSync(POLL_FILE, 'utf8'));
   const now = Date.now();
 
   for (const [pollId, pollData] of Object.entries(polls)) {
@@ -100,13 +111,37 @@ function tallyPollResults(client, messageId, pollData) {
       await pollMessage.reply(result);
 
       // Clean up
-      const polls = JSON.parse(fs.readFileSync(POLL_FILE, 'utf8'));
+      const polls = JSON.parse(readFileSync(POLL_FILE, 'utf8'));
       delete polls[messageId];
-      fs.writeFileSync(POLL_FILE, JSON.stringify(polls, null, 2));
+      writeFileSync(POLL_FILE, JSON.stringify(polls, null, 2));
     })
     .catch(console.error);
 }
 
+function summarizeTo20Words(text) {
+  if (!text) return '[No text content]';
+
+  const sentences = text.match(/[^.!?]+[.!?]*/g) || [];
+  let summary = '';
+  let wordCount = 0;
+
+  for (const sentence of sentences) {
+    const wordsInSentence = sentence.trim().split(/\s+/).length;
+    if (wordCount + wordsInSentence <= 20) {
+      summary += sentence.trim() + ' ';
+      wordCount += wordsInSentence;
+    } else {
+      break;
+    }
+  }
+
+  // If no sentences or too short, fallback to first 20 words truncation
+  if (!summary) {
+    summary = text.split(/\s+/).slice(0, 20).join(' ') + (text.split(/\s+/).length > 20 ? '...' : '');
+  }
+
+  return summary.trim();
+}
 
 async function summarizePoll(messageId, pollData) {
   try {
@@ -138,6 +173,9 @@ async function summarizePoll(messageId, pollData) {
     console.error(`Failed to summarize poll ${messageId}:`, e.message);
   }
 }
+
+process.on('unhandledRejection', console.error);
+process.on('uncaughtException', console.error);
 
 // Capture incoming messages and store them in the cache
 client.on('messageCreate', async (message) => {
@@ -193,7 +231,7 @@ client.on('interactionCreate', async (interaction) => {
 
       let fullResponse = '';
       let editTimer;
-      const rl = readline.createInterface({ input: res.data });
+      const rl = createInterface({ input: res.data });
 
       rl.on('line', async (line) => {
         if (!line.trim()) return;
@@ -324,20 +362,20 @@ client.on('interactionCreate', async (interaction) => {
         timestamp: new Date(datetime).getTime()
       };
 
-      const events = fs.existsSync(AGENDA_FILE)
-        ? JSON.parse(fs.readFileSync(AGENDA_FILE))
+      const events = existsSync(AGENDA_FILE)
+        ? JSON.parse(readFileSync(AGENDA_FILE))
         : [];
 
       events.push(event);
       events.sort((a, b) => a.timestamp - b.timestamp);
-      fs.writeFileSync(AGENDA_FILE, JSON.stringify(events, null, 2));
+      writeFileSync(AGENDA_FILE, JSON.stringify(events, null, 2));
 
       return interaction.reply(`📌 Event **${title}** scheduled for **${datetime}**`);
     }
 
     else if (subcommand === 'list') {
-      const events = fs.existsSync(AGENDA_FILE)
-        ? JSON.parse(fs.readFileSync(AGENDA_FILE))
+      const events = existsSync(AGENDA_FILE)
+        ? JSON.parse(readFileSync(AGENDA_FILE))
         : [];
 
       if (events.length === 0) {
@@ -371,7 +409,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // 👉 FETCH recent messages and summarize
-    const messages = await interaction.channel.messages.fetch({ limit: 50 });
+    const messages = await interaction.channel.messages.fetch({ limit: 100 });
     const content = messages
       .filter(msg => !msg.author.bot)
       .map(msg => `${msg.author.username}: ${msg.content}`)
@@ -443,114 +481,174 @@ client.on('interactionCreate', async (interaction) => {
     }, 5 * 60 * 1000);
   }
 
-  else if (commandName === 'pollresults') {
-    const messageId = interaction.options.getString('messageid');
-    const channel = interaction.channel;
+  else if (commandName === 'poll-results') {
+    const pollId = interaction.options.getString('poll_id');
+    const polls = JSON.parse(readFileSync(POLL_FILE, 'utf8'));
+    const pollData = polls[pollId];
 
-    try {
-      const pollMessage = await channel.messages.fetch(messageId);
-
-      const reactions = pollMessage.reactions.cache;
-      if (reactions.size === 0) {
-        return interaction.reply('❌ No reactions found on that message.');
-      }
-
-      let results = '📊 **Poll Results:**\n';
-      for (const [emoji, reaction] of reactions) {
-        results += `${emoji} - ${reaction.count - 1} votes\n`; // subtract 1 for the bot's own reaction
-      }
-
-      interaction.reply(results);
-    } catch (err) {
-      console.error('Poll results error:', err.message);
-      interaction.reply('❌ Failed to fetch poll results. Make sure the message ID is correct.');
+    if (!pollData) {
+      return interaction.reply('❌ Poll not found.');
     }
+
+    const pollChannel = await client.channels.fetch(pollData.channelId);
+    const pollMessage = await pollChannel.messages.fetch(pollId);
+
+    const reactionCounts = await Promise.all(
+      pollData.options.map(async opt => {
+        const reaction = pollMessage.reactions.cache.find(r => r.emoji.name === opt.emoji);
+        const count = reaction ? reaction.count - 1 : 0; // subtract bot’s own reaction
+        return { ...opt, votes: count };
+      })
+    );
+
+    const sorted = reactionCounts.sort((a, b) => b.votes - a.votes);
+
+    const rows = sorted.map(opt => {
+      const preview = opt.fullContent.slice(0, 100) + (opt.fullContent.length > 100 ? '...' : '');
+
+      return {
+        content: `**${opt.emoji}** - ${opt.votes} votes\n${preview}`,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setLabel('View Full Message')
+              .setStyle(ButtonStyle.Link)
+              .setURL(`https://discord.com/channels/${interaction.guildId}/${pollData.channelId}/${pollId}`)
+          ),
+        ],
+      };
+    });
+
+    // Respond with poll results in multiple messages (one per option)
+    for (const row of rows) {
+      await interaction.followUp({ content: row.content, components: row.components });
+    }
+
   }
+
   else if (commandName === 'summarize-voice') {
-    const channel = options.getChannel('channel');
+    const channel = interaction.options.getChannel('channel');
     if (!channel || channel.type !== 'GUILD_VOICE') {
       return interaction.reply('❌ Please select a valid voice channel.');
     }
-
-    await interaction.reply('🎤 Summarizing the voice channel...');
-
+  
+    await interaction.deferReply();
+  
     try {
-      // Assume you already have a transcription of the voice channel.
-      // For example, you can use Google or AssemblyAI APIs to transcribe it.
-
-      const transcription = await transcribeVoiceChannel(channel); // Your method to transcribe voice chat
-
+      const transcription = await transcribeVoiceChannel(channel);
       if (!transcription || transcription.length === 0) {
         return interaction.editReply('❌ No conversation was detected in the voice channel.');
       }
-
+  
       const prompt = `Please summarize the following conversation:\n${transcription.join('\n')}`;
       const res = await axios.post('http://localhost:11434/api/generate', {
         model: 'llama3',
         prompt,
         stream: false,
       });
-
-      interaction.editReply(`📝 Voice Channel Summary:\n${res.data.response}`);
+  
+      await interaction.editReply(`📝 Voice Channel Summary:\n${res.data.response}`);
     } catch (err) {
       console.error('Summarizing voice channel error:', err.message);
-      interaction.editReply('❌ Failed to summarize the voice channel.');
+      await interaction.editReply('❌ Failed to summarize the voice channel.');
     }
   }
   else if (commandName === 'poll-from-likes') {
     const count = interaction.options.getInteger('count') || 5;
     const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
-
+  
     if (!targetChannel.viewable) {
       return interaction.reply('❌ I do not have access to that channel.');
     }
-
+  
+    await interaction.deferReply();
+  
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-
     const messages = await targetChannel.messages.fetch({ limit: 100 });
-
+  
     const positiveEmojis = ['👍', '❤️', '🔥', '💯'];
-
-    const topMessages = messages
-      .map(m => {
-        const totalLikes = positiveEmojis.reduce((sum, emoji) => {
-          return sum + (m.reactions.cache.get(emoji)?.count || 0);
-        }, 0);
-        return {
-          content: m.content || '[No text content]',
-          likes: totalLikes,
-          timestamp: m.createdTimestamp,
-        };
-      })
-      .filter(m => m.timestamp > sevenDaysAgo && m.likes > 0)
+  
+    const scoredMessages = messages.map(m => {
+      const totalLikes = positiveEmojis.reduce((sum, emoji) => {
+        return sum + (m.reactions.cache.get(emoji)?.count || 0);
+      }, 0);
+      return {
+        content: m.content || '[No text content]',
+        likes: totalLikes,
+        timestamp: m.createdTimestamp,
+        messageId: m.id,
+      };
+    }).filter(m => m.timestamp > sevenDaysAgo);
+  
+    const topMessages = scoredMessages
       .sort((a, b) => b.likes - a.likes)
       .slice(0, count);
-
+  
     if (topMessages.length === 0) {
-      return interaction.reply('❌ No messages with positive reactions found.');
+      return interaction.editReply('❌ No messages found from the past 7 days.');
     }
-
+  
+    const alphabetEmojis = [...'🇦🇧🇨🇩🇪🇫🇬🇭🇮🇯🇰'];
+  
     const pollOptions = topMessages.map((m, i) => {
-      const words = m.content.split(/\s+/).slice(0, 200).join(' ');
+      const words = m.content.split(/\s+/);
+      const preview = words.slice(0, 50).join(' ');
       return {
-        label: words,
-        emoji: `${i + 1}️⃣`,
+        label: preview,
+        emoji: alphabetEmojis[i],
         fullContent: m.content,
         likes: m.likes,
+        messageId: m.messageId,
+        isTruncated: words.length > 50,
       };
     });
-
-    let pollText = `📊 **Poll Based on Top Messages (👍❤️🔥💯 - Last 7 Days)**\n\n`;
-    pollOptions.forEach(opt => {
-      pollText += `${opt.emoji} (${opt.likes} total likes)\n${opt.label}\n\n`;
-    });
-
-    const pollMessage = await interaction.reply({ content: pollText, fetchReply: true });
+  
+    // 1. Send each message preview with a View Full Message button if truncated
     for (const opt of pollOptions) {
-      await pollMessage.react(opt.emoji);
+      const content = `${opt.emoji} (${opt.likes} likes)\n${opt.label}`;
+      const components = [];
+  
+      if (opt.isTruncated) {
+        const url = `https://discord.com/channels/${interaction.guildId}/${targetChannel.id}/${opt.messageId}`;
+        const button = new ButtonBuilder()
+          .setLabel(`View Full Message`)
+          .setStyle(ButtonStyle.Link)
+          .setURL(url);
+        components.push(new ActionRowBuilder().addComponents(button));
+      }
+  
+      await interaction.followUp({
+        content,
+        components,
+        ephemeral: false,
+      });
     }
-
-    const polls = JSON.parse(fs.readFileSync(POLL_FILE, 'utf8'));
+  
+    // 2. Send the final poll message (reactable) with summarized full message (20 words approx)
+    let pollBody = `📊 **Vote using reactions below:**\n\n`;
+    for (const opt of pollOptions) {
+      const summary = summarizeTo20Words(opt.fullContent);
+      pollBody += `${opt.emoji} - ${summary} (${opt.likes} likes)\n\n`;
+    }
+  
+    const pollMessage = await interaction.followUp({
+      content: pollBody,
+      ephemeral: false,
+    });
+  
+    // React with the emojis for voting
+    for (const opt of pollOptions) {
+      try {
+        await pollMessage.react(opt.emoji);
+      } catch (err) {
+        console.warn(`❗ Failed to react with ${opt.emoji}:`, err.message);
+      }
+    }
+  
+    // Save poll metadata
+    const polls = fs.existsSync(POLL_FILE)
+      ? JSON.parse(fs.readFileSync(POLL_FILE, 'utf8'))
+      : {};
     polls[pollMessage.id] = {
       channelId: pollMessage.channel.id,
       options: pollOptions,
@@ -558,8 +656,6 @@ client.on('interactionCreate', async (interaction) => {
     };
     fs.writeFileSync(POLL_FILE, JSON.stringify(polls, null, 2));
   }
-
-
 
   else if (commandName === 'help') {
     const helpText = `
@@ -571,7 +667,7 @@ client.on('interactionCreate', async (interaction) => {
   - \`/pinlast\`: Pin the last user message.
   - \`/agenda\`: Generate an agenda from recent messages.
   - \`/poll <question> <option1> <option2> ...\`: Create a poll.
-  - \`/pollresults <messageId>\`: Get results of a poll.
+  - \`/poll-results <messageId>\`: Get results of a poll.
   - \`/summarize-voice <channel>\`: Summarize a voice channel conversation.
   - \`/poll-from-likes [count]\`: Create a poll from the most liked messages.
   `;
