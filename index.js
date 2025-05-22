@@ -204,7 +204,7 @@ client.on('messageCreate', async (message) => {
   }
 
   // Log for debugging
-  console.log(`Messages for guild ${guildId}:`, guildMessages);
+  //console.log(`Messages for guild ${guildId}:`, guildMessages);
 });
 
 

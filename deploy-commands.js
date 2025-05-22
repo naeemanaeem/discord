@@ -89,6 +89,30 @@ const commands = [
                 .setDescription('How many top liked messages to include (default: 5)')
                 .setRequired(false)
         ),
+    new SlashCommandBuilder()
+        .setName('event-create')
+        .setDescription('Create a calendar event')
+        .addStringOption(opt => opt.setName('title').setDescription('Event title').setRequired(true))
+        .addStringOption(opt => opt.setName('date').setDescription('Date (e.g. 2025-05-19)').setRequired(true))
+        .addStringOption(opt => opt.setName('time').setDescription('Time (e.g. 14:00)').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('event-list')
+        .setDescription('List all upcoming events'),
+
+    new SlashCommandBuilder()
+        .setName('event-update')
+        .setDescription('Update a calendar event by ID')
+        .addStringOption(opt => opt.setName('id').setDescription('Event ID').setRequired(true))
+        .addStringOption(opt => opt.setName('title').setDescription('New title').setRequired(false))
+        .addStringOption(opt => opt.setName('date').setDescription('New date').setRequired(false))
+        .addStringOption(opt => opt.setName('time').setDescription('New time').setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('event-delete')
+        .setDescription('Delete a calendar event by ID')
+        .addStringOption(opt => opt.setName('id').setDescription('Event ID').setRequired(true)),
+
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
