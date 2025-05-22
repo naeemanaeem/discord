@@ -1,24 +1,16 @@
-// googleAuth.js
+// auth/googleAuth.js
 import { google } from 'googleapis';
-import { readFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Get __dirname for ES module
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const keyPath = path.join(__dirname, '..', 'service-account.json');
 
 export async function getAuthedClient() {
-  const credentialsPath = path.join(__dirname, 'credentials.json');
-  const credentials = JSON.parse(await readFile(credentialsPath, 'utf-8'));
+  const auth = new google.auth.GoogleAuth({
+    keyFile: keyPath,
+    scopes: ['https://www.googleapis.com/auth/calendar'],
+  });
 
-  const scopes = ['https://www.googleapis.com/auth/calendar'];
-  const auth = new google.auth.JWT(
-    credentials.client_email,
-    null,
-    credentials.private_key,
-    scopes
-  );
-  await auth.authorize();
-  return auth;
+  return await auth.getClient();
 }

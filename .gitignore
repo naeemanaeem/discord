@@ -1,4 +1,6 @@
 node_modules/
 .env
 polls.json
-credential.json
+credentials.json
+service-account.json
+*.log
