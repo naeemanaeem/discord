@@ -1,3 +1,4 @@
 node_modules/
 .env
 polls.json
+credential.json

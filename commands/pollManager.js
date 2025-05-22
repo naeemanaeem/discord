@@ -32,7 +32,7 @@ function generateVoteBar(votes, total, length = 20) {
   return '█'.repeat(filled) + '░'.repeat(length - filled);
 }
 
-function renderPollContent(options) {
+function renderPollContent(options, final = false) {
   if (!options || !Array.isArray(options)) {
     return '⚠️ Poll data missing or corrupted.';
   }
@@ -40,13 +40,16 @@ function renderPollContent(options) {
   const totalVotes = options.reduce((sum, o) => sum + (o.votes || 0), 0);
   const maxVotes = Math.max(...options.map(o => o.votes || 0), 1);
 
-  let content = `📊 **Live Poll Results:**\n\n`;
+  let content = final
+    ? `🗳 **Final Poll Results (Voting locked after 24h):**\n\n`
+    : `📊 **Live Poll Results:**\n\n`;
 
   for (const opt of options) {
-    const bar = generateVoteBar(opt.votes || 0, totalVotes);
+    const bar = generateVoteBar(opt.votes || 0, totalVotes, 15);
     const label = opt.label?.length > 80 ? opt.label.slice(0, 80) + '…' : opt.label;
     const votes = opt.votes || 0;
-    content += `${opt.emoji} ${label}\n${bar} ${votes} vote${votes === 1 ? '' : 's'}\n\n`;
+    const graph = votes > 0 ? '🟩'.repeat(Math.round((votes / maxVotes) * 10)) : '▫️';
+    content += `${opt.emoji} ${label}\n${bar} ${votes} vote${votes === 1 ? '' : 's'}\n${graph}\n\n`;
   }
 
   if (content.length > 2000) {
@@ -56,7 +59,8 @@ function renderPollContent(options) {
   return content;
 }
 
-export function startPollLiveUpdates(pollMessage, pollOptions) {
+
+function startPollLiveUpdates(pollMessage, pollOptions) {
   const interval = setInterval(async () => {
     try {
       const fetched = await pollMessage.channel.messages.fetch(pollMessage.id);
@@ -69,18 +73,33 @@ export function startPollLiveUpdates(pollMessage, pollOptions) {
         })
       );
 
-      // Update poll data in memory and file
       const polls = loadPolls();
       const poll = polls[pollMessage.id];
-      if (poll) {
-        for (let i = 0; i < reactionCounts.length; i++) {
-          poll.options[i].votes = reactionCounts[i];
-        }
-        savePolls(polls);
+      if (!poll) return;
+
+      // Update votes and save
+      for (let i = 0; i < reactionCounts.length; i++) {
+        poll.options[i].votes = reactionCounts[i];
+        // 👇 Store historical data
+        if (!poll.history) poll.history = [];
+      }
+      poll.history.push({
+        timestamp: Date.now(),
+        votes: reactionCounts,
+      });
+
+      savePolls(polls);
+
+      // If expired, show final results and stop
+      if (poll.expiresAt < Date.now()) {
+        const finalContent = renderPollContent(poll.options, true); // final = true
+        await fetched.edit(finalContent);
+        clearInterval(interval);
+        pollIntervals.delete(pollMessage.id);
+        return;
       }
 
-      // Render and update message
-      const updatedContent = renderPollContent(poll?.options);
+      const updatedContent = renderPollContent(poll.options);
       await fetched.edit(updatedContent);
     } catch (err) {
       console.error(`❌ Error updating poll ${pollMessage.id}:`, err.message);
@@ -91,6 +110,7 @@ export function startPollLiveUpdates(pollMessage, pollOptions) {
 
   pollIntervals.set(pollMessage.id, interval);
 }
+
 
 export async function resumeAllLivePolls(client) {
   const polls = loadPolls();
