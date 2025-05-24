@@ -405,7 +405,7 @@ client.on('interactionCreate', async (interaction) => {
     const emojiList = ['🇦', '🇧', '🇨', '🇩', '🇪'];
 
     if (options.length < 2) {
-      return interaction.reply({ content: '❌ You need at least 2 options.', ephemeral: true });
+      return interaction.reply({ content: '❌ You need at least 2 options.', ephemeral: false });
     }
 
     // 👉 FETCH recent messages and summarize

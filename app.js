@@ -1,114 +1,118 @@
 // app.js
 import { Client, GatewayIntentBits, Collection, REST, Routes } from 'discord.js';
 import dotenv from 'dotenv';
+
+// Calendar commands
 import { createEvent, listEvents, updateEvent, deleteEvent } from './commands/calendar.js';
+
+// Poll‐from‐likes & poll‐results
 import * as pollForLikes from './commands/pollForLikes.js';
 import { pollResults } from './commands/pollResults.js';
+
+// LLM utilities
 import * as ask from './commands/ask.js';
 import * as summarize from './commands/summarize.js';
 import * as stats from './commands/stats.js';
 import * as modcheck from './commands/modcheck.js';
 import * as pinlast from './commands/pinlast.js';
-//import { startPollUpdater } from './commands/pollManager.js';
-//import { handleReactionUpdate } from './commands/pollManager.js';
+
+// Announce + RSVP
+import {
+  data    as announceData,
+  execute as announceExecute,
+  handleAnnouncementReaction
+} from './commands/announce-event.js';
+
+// Live‐poll resume
 import { resumeAllLivePolls } from './commands/pollManager.js';
 
-/*import { MessageFlags } from 'discord.js';
-import {
-    activePolls,
-    resumePendingPolls,
-    tallyPollResults,
-    savePollsToFile
-  } from './commands/pollManager.js';*/
 dotenv.config();
 
-// Create client
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// 1️⃣ Create client
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessageReactions, // needed for rsvp reactions
+  ]
+});
 
-// Load commands into a collection
+// 2️⃣ Collect your commands
 client.commands = new Collection();
 const commands = [
-    createEvent,
-    listEvents,
-    updateEvent,
-    deleteEvent,
-    pollForLikes,
-    pollResults,
-    ask,
-    summarize,
-    stats,
-    modcheck,
-    pinlast,
-  ];
+  createEvent,
+  listEvents,
+  updateEvent,
+  deleteEvent,
+  pollForLikes,
+  pollResults,
+  ask,
+  summarize,
+  stats,
+  modcheck,
+  pinlast,
+  { data: announceData, execute: announceExecute },
+];
 
-  for (const command of commands) {
-    console.log(command, command.data?.name);
-    client.commands.set(command.data.name, command);
-  }
-  
+for (const cmd of commands) {
+  client.commands.set(cmd.data.name, cmd);
+}
 
-// Register slash commands
+// 3️⃣ Register slash commands
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
 async function registerSlashCommands() {
   try {
-    console.log('🔁 Registering slash commands...');
+    console.log('🔁 Registering slash commands in guild...');
     await rest.put(
-      Routes.applicationCommands(process.env.CLIENT_ID),
+      Routes.applicationGuildCommands(
+        process.env.CLIENT_ID,
+        process.env.GUILD_ID     // ← your test server’s ID
+      ),
       { body: commands.map(cmd => cmd.data.toJSON()) }
     );
-    console.log('✅ Slash commands registered.');
+    console.log('✅ Slash commands registered in guild.');
   } catch (err) {
     console.error('❌ Error registering commands:', err);
   }
 }
 
-// Handle slash commands
+// 4️⃣ Handle slash‐command interactions
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  const command = client.commands.get(interaction.commandName);
-
-  if (!command) {
-    return interaction.reply({
-      content: '❓ Unknown command',
-      ephemeral: true,
-    });
+  const cmd = client.commands.get(interaction.commandName);
+  if (!cmd) {
+    return interaction.reply({ content: '❓ Unknown command', ephemeral: false });
   }
 
   try {
-    await command.execute(interaction);
-  } catch (error) {
-    console.error(`❌ Error executing ${interaction.commandName}:`, error);
-
-    // Only reply if it hasn’t been already
+    // If it’s announce-event, we need to capture its returned messageId
+    if (interaction.commandName === 'announce-event') {
+      const messageId = await announceExecute(interaction);
+      // announceExecute should have returned the sent message’s ID
+      // no further action here—RSVP manager will track it
+    } else {
+      await cmd.execute(interaction);
+    }
+  } catch (err) {
+    console.error(`❌ Error executing ${interaction.commandName}:`, err);
     if (interaction.replied || interaction.deferred) {
       await interaction.editReply({ content: '⚠️ Something went wrong!' });
     } else {
-      await interaction.reply({
-        content: '⚠️ Something went wrong!',
-        ephemeral: true,
-      });
+      await interaction.reply({ content: '⚠️ Something went wrong!', ephemeral: false });
     }
   }
 });
-/*client.on('messageReactionAdd', (reaction, user) => {
-  handleReactionUpdate(reaction, user);
-});
 
-client.on('messageReactionRemove', (reaction, user) => {
-  handleReactionUpdate(reaction, user);
-});
-*/
+// 5️⃣ Forward reaction adds/removes for RSVP
+client.on('messageReactionAdd',    (reaction, user) => handleAnnouncementReaction(reaction, user));
+client.on('messageReactionRemove', (reaction, user) => handleAnnouncementReaction(reaction, user));
 
-// Bot ready
+// 6️⃣ Ready → resume live polls
 client.once('ready', () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
   resumeAllLivePolls(client);
-  //startPollUpdater(); // 🔁 Start live poll updates
 });
 
-// Start everything
+// 7️⃣ Boot
 registerSlashCommands();
 client.login(process.env.DISCORD_TOKEN);
-export { client };

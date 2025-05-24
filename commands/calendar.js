@@ -22,7 +22,7 @@ export const createEvent = {
     const time = interaction.options.getString('time');
     const duration = interaction.options.getInteger('duration') || 60;
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false });
 
     try {
       const auth = await getAuthedClient(interaction);
@@ -56,7 +56,7 @@ export const listEvents = {
     .setDescription('📆 List upcoming calendar events'),
 
   async execute(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false });
 
     try {
       const auth = await getAuthedClient(interaction);
@@ -105,7 +105,7 @@ export const updateEvent = {
     const newTime = interaction.options.getString('time');
     const newDate = interaction.options.getString('date');
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false });
 
     try {
       const auth = await getAuthedClient(interaction);
@@ -152,7 +152,7 @@ export const deleteEvent = {
   async execute(interaction) {
     const id = interaction.options.getString('id');
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false });
 
     try {
       const auth = await getAuthedClient(interaction);
